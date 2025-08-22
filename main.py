@@ -1590,7 +1590,7 @@ def create_timeseries_tab(results):
                             f"Date: %{{x}}<br>" +
                             f"Z-Score: %{{y:.3f}}<br>" +
                             f"Original: {factor_scores[col].loc[factor_scores.index[0]]:.4f}<br>" +
-                            f"<i>Explained Variance: {results['explained_variance_ratio'][i]*100:.1f}%</i><extra></extra>",
+                            f"<i>Explained Variance: {results['metrics']['explained_variance'][i]*100:.1f}%</i><extra></extra>",
                 mode='lines'
             ),
             row=1, col=1
