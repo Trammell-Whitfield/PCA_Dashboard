@@ -50,6 +50,15 @@ except ImportError as e:
     from statsmodels.tsa.stattools import adfuller, grangercausalitytests
     from scipy.optimize import minimize
 
+# Enhanced Time Series Analysis Import
+try:
+    from time_series_analysis import create_enhanced_timeseries_tab, EnhancedTimeSeriesAnalyzer
+    ENHANCED_TIMESERIES_AVAILABLE = True
+    logger.info("Enhanced Time Series Analysis module loaded successfully")
+except ImportError as e:
+    logger.warning(f"Enhanced Time Series Analysis module not available: {e}")
+    ENHANCED_TIMESERIES_AVAILABLE = False
+
 # LSTM imports - Updated for new enhanced API
 try:
     from LSTM_Pred import EnhancedLSTMPredictor, run_enhanced_model_demo
@@ -1066,7 +1075,38 @@ def update_enhanced_tab_content(active_tab, results_style):
         elif active_tab == "loadings-tab":
             return create_loadings_tab(results['metrics'])
         elif active_tab == "timeseries-tab":
-            return create_timeseries_tab(results)
+            # Add specific diagnostics for time series tab
+            logger.info(f"Loading time series tab. ENHANCED_TIMESERIES_AVAILABLE: {ENHANCED_TIMESERIES_AVAILABLE}")
+            
+            # Check if we have required data
+            metrics = results.get('metrics')
+            returns = results.get('returns')
+            if not metrics or returns is None or (hasattr(returns, '__len__') and len(returns) == 0):
+                return create_time_series_error_message("Missing required data for time series analysis")
+            
+            factor_scores = results.get('metrics', {}).get('factor_scores')
+            if factor_scores is None or len(factor_scores) == 0:
+                return create_time_series_error_message("No factor scores available for time series analysis")
+            
+            logger.info(f"Time series data check - Factor scores shape: {factor_scores.shape}, Returns shape: {results.get('returns', pd.DataFrame()).shape}")
+            
+            try:
+                if ENHANCED_TIMESERIES_AVAILABLE:
+                    logger.info("🔄 Starting enhanced time series analysis - this may take 30-120 seconds...")
+                    # Show initial loading message
+                    loading_start_time = datetime.datetime.now()
+                    logger.info(f"⏱️  Analysis started at: {loading_start_time.strftime('%H:%M:%S')}")
+                    
+                    # Return loading screen followed by actual analysis
+                    return create_enhanced_timeseries_with_loading(results)
+                else:
+                    logger.info("Creating fallback time series tab...")
+                    return create_timeseries_tab(results)
+            except Exception as ts_error:
+                logger.error(f"Specific time series error: {str(ts_error)}")
+                import traceback
+                logger.error(f"Time series traceback: {traceback.format_exc()}")
+                return create_time_series_error_message(f"Time series creation failed: {str(ts_error)}")
         elif active_tab == "volatility-tab":
             return create_volatility_tab(results)
         elif active_tab == "risk-tab":
@@ -1104,6 +1144,152 @@ def create_error_message(error_str):
         html.P(f"Error: {error_str}"),
         html.P("Please try running the analysis again with different parameters.")
     ], color="danger")
+
+def create_time_series_error_message(error_str):
+    """Create specific error message for time series tab"""
+    return dbc.Alert([
+        html.H5("📈 Time Series Analysis Issue", className="alert-heading"),
+        html.P(f"Issue: {error_str}"),
+        html.Hr(),
+        html.H6("Troubleshooting Steps:", className="mb-2"),
+        html.Ol([
+            html.Li("Ensure you have run the PCA analysis first by clicking '🚀 Run Enhanced Analysis'"),
+            html.Li("Try using 'Demo Data' from the preset dropdown if you haven't loaded any data"),
+            html.Li("Make sure your data has at least 30 observations for time series analysis"),
+            html.Li("Check that your stock data contains valid time series information")
+        ]),
+        html.P([
+            "💡 ",
+            html.Strong("Tip: "),
+            "The time series analysis requires PCA factor scores and stock returns data to be available."
+        ], className="text-info mt-2")
+    ], color="warning", className="mt-4")
+
+
+def create_timeseries_immediate_loading():
+    """Create immediate loading screen for time series analysis"""
+    return html.Div([
+        dbc.Container([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        # Large spinner
+                        dbc.Spinner(
+                            size="lg",
+                            color="primary",
+                            spinner_style={"width": "4rem", "height": "4rem"},
+                            spinner_class_name="mb-4"
+                        ),
+                        
+                        # Title
+                        html.H3([
+                            html.I(className="fas fa-chart-line me-3"),
+                            "Enhanced Time Series Analysis"
+                        ], className="text-primary mb-3"),
+                        
+                        # Progress message
+                        html.H5("🔄 Processing Advanced Analytics...", className="text-muted mb-4"),
+                        
+                        # Info alert
+                        dbc.Alert([
+                            html.H6("⏱️ Processing Time", className="alert-heading"),
+                            html.P([
+                                "Running comprehensive analysis including regime detection, ",
+                                "rolling correlations, and advanced visualizations. "
+                            ]),
+                            html.P([
+                                html.Strong("Estimated time: "),
+                                "30-120 seconds depending on data size"
+                            ], className="mb-0")
+                        ], color="info"),
+                        
+                        # Loading steps
+                        dbc.ListGroup([
+                            dbc.ListGroupItem([
+                                dbc.Spinner(size="sm", color="secondary", spinner_class_name="me-2"),
+                                "Normalizing factor scores and detecting regimes..."
+                            ]),
+                            dbc.ListGroupItem([
+                                dbc.Spinner(size="sm", color="secondary", spinner_class_name="me-2"),
+                                "Computing rolling statistics and momentum indicators..."
+                            ]),
+                            dbc.ListGroupItem([
+                                dbc.Spinner(size="sm", color="secondary", spinner_class_name="me-2"),
+                                "Analyzing stock-factor correlations..."
+                            ]),
+                            dbc.ListGroupItem([
+                                dbc.Spinner(size="sm", color="secondary", spinner_class_name="me-2"),
+                                "Generating 8-panel interactive visualization..."
+                            ])
+                        ], flush=True)
+                        
+                    ], className="text-center")
+                ], width=6)
+            ], justify="center", className="min-vh-75 align-items-center")
+        ], fluid=True)
+    ], style={"minHeight": "80vh"})
+
+
+def create_enhanced_timeseries_with_loading(results):
+    """Enhanced time series analysis with user-friendly loading experience"""
+    start_time = datetime.datetime.now()
+    logger.info(f"🚀 Enhanced Time Series Analysis started at {start_time.strftime('%H:%M:%S')}")
+    
+    # Create header with loading info that shows immediately
+    loading_header = html.Div([
+        dbc.Alert([
+            html.Div([
+                dbc.Spinner(color="primary", size="sm", spinner_class_name="me-2"),
+                html.H5([
+                    html.I(className="fas fa-chart-line me-2"),
+                    "Enhanced Time Series Analysis - Processing..."
+                ], className="mb-2"),
+            ], className="d-flex align-items-center"),
+            
+            html.P([
+                "⏳ Running comprehensive analysis with regime detection, rolling correlations, and advanced visualizations. ",
+                f"Started at {start_time.strftime('%H:%M:%S')} - Estimated completion: 30-120 seconds."
+            ], className="mb-2"),
+            
+            dbc.Progress(value=100, animated=True, striped=True, style={"height": "10px"}),
+            
+            html.P([
+                "💡 This analysis includes rolling PCA, factor loadings drift analysis, and multi-dimensional correlation calculations. ",
+                "The results will appear below once processing is complete."
+            ], className="small text-muted mt-2 mb-0")
+        ], color="info")
+    ])
+    
+    try:
+        # Run the actual enhanced analysis
+        analysis_results = create_enhanced_timeseries_tab(results)
+        
+        end_time = datetime.datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        logger.info(f"✅ Enhanced Time Series Analysis completed in {duration:.1f} seconds")
+        
+        # Add completion info to results
+        completion_banner = dbc.Alert([
+            html.P([
+                html.I(className="fas fa-check-circle text-success me-2"),
+                html.Strong("Analysis Complete! "),
+                f"Finished at {end_time.strftime('%H:%M:%S')} ({duration:.1f}s)"
+            ], className="mb-0")
+        ], color="success", dismissable=True, className="mb-3")
+        
+        # Combine loading header, completion banner, and results
+        return html.Div([
+            completion_banner,
+            analysis_results
+        ])
+        
+    except Exception as e:
+        logger.error(f"❌ Enhanced Time Series Analysis failed: {str(e)}")
+        return html.Div([
+            loading_header,
+            create_time_series_error_message(f"Analysis failed after {(datetime.datetime.now() - start_time).total_seconds():.1f}s: {str(e)}")
+        ])
+
 
 def create_volatility_tab(results):
     """Create enhanced volatility analysis tab"""
@@ -1502,8 +1688,9 @@ def create_loadings_tab(metrics):
     
     return dcc.Graph(figure=fig)
 
+# DEPRECATED: This function is kept as fallback when enhanced time series module is not available
 def create_timeseries_tab(results):
-    """Enhanced time series analysis with improved PC scores visualization"""
+    """Legacy time series analysis - kept as fallback for enhanced time series visualization"""
     factor_scores = results['metrics']['factor_scores']
     returns = results['returns']
     
@@ -1675,7 +1862,7 @@ def create_timeseries_tab(results):
     
     # 4. Individual stock normalized price movements  
     data = results.get('data', returns)
-    if data is not None and not data.empty:
+    if data is not None and len(data) > 0:
         for i, stock in enumerate(returns.columns[:5]):  # Show top 5 stocks
             if stock in data.columns:
                 # Normalize to start at 1
@@ -1709,7 +1896,7 @@ def create_timeseries_tab(results):
         )
     
     # 6. Economic Indicators (enhanced)
-    if results.get('economic_data') is not None and not results['economic_data'].empty:
+    if results.get('economic_data') is not None and len(results['economic_data']) > 0:
         econ_data = results['economic_data']
         econ_colors = px.colors.qualitative.Dark2
         
