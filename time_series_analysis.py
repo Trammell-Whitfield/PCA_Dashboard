@@ -1,7 +1,6 @@
 # Enhanced Time Series Analysis Module
 # Extracted and improved from main PCA dashboard
 
-import datetime
 import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
@@ -18,7 +17,7 @@ import warnings
 
 # Optional dependency for structural break detection
 try:
-    from ruptures import Binseg
+    from ruptures import Binseg #ignore 
     RUPTURES_AVAILABLE = True
 except ImportError:
     RUPTURES_AVAILABLE = False
@@ -463,12 +462,19 @@ class EnhancedTimeSeriesAnalyzer:
                     ).corr(factor_scores[col2])
             results['rolling_correlations'] = pd.DataFrame(rolling_corr)
         
-        # Rolling Sharpe ratios
+        # Rolling Sharpe ratios (improved calculation)
         rolling_sharpe = {}
         for col in factor_scores.columns:
             rolling_mean = factor_scores[col].rolling(self.window_long).mean()
             rolling_std = factor_scores[col].rolling(self.window_long).std()
-            rolling_sharpe[col] = (rolling_mean * np.sqrt(252)) / (rolling_std * np.sqrt(252))
+            
+            # Use information ratio style for factor scores (no risk-free rate)
+            # This is more appropriate for factor analysis
+            rolling_sharpe[col] = np.where(
+                rolling_std > 1e-6,
+                rolling_mean / rolling_std * np.sqrt(252),  # Annualized information ratio
+                0
+            )
         results['rolling_sharpe'] = pd.DataFrame(rolling_sharpe)
         
         return results
@@ -641,11 +647,31 @@ class EnhancedTimeSeriesAnalyzer:
             series = factor_scores[col]
             norm_series = normalized_scores[col]
             
+            # Calculate improved Sharpe ratio for factor analysis
+            annual_return = series.mean() * 252
+            annual_volatility = series.std() * np.sqrt(252)
+            
+            # Use appropriate risk-free rate for factor scores
+            if abs(annual_return) < 0.1:  # Factor scores typically have small returns
+                risk_free_rate = 0.001  # 0.1% - very conservative
+            else:
+                risk_free_rate = 0.01   # 1% - for larger returns
+            
+            # Calculate Sharpe ratio with proper risk-free rate handling
+            if annual_volatility > 1e-6:
+                if abs(annual_return) < 0.05:  # Very small returns - use information ratio style
+                    factor_sharpe_ratio = annual_return / annual_volatility
+                else:  # Normal Sharpe calculation
+                    factor_sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility
+                factor_sharpe_ratio = np.clip(factor_sharpe_ratio, -5, 5)
+            else:
+                factor_sharpe_ratio = 0
+            
             metrics = {
                 'total_return': series.sum(),
-                'annualized_return': series.mean() * 252,
-                'annualized_volatility': series.std() * np.sqrt(252),
-                'sharpe_ratio': (series.mean() * 252) / (series.std() * np.sqrt(252)) if series.std() != 0 else 0,
+                'annualized_return': annual_return,
+                'annualized_volatility': annual_volatility,
+                'sharpe_ratio': factor_sharpe_ratio,
                 'max_drawdown': (norm_series.cumsum() - norm_series.cumsum().expanding().max()).min(),
                 'explained_variance': explained_variance[i] if i < len(explained_variance) else 0,
                 'current_z_score': norm_series.iloc[-1] if len(norm_series) > 0 else 0,
@@ -962,42 +988,134 @@ class EnhancedTimeSeriesAnalyzer:
         fig.add_hline(y=-0.7, line_dash="dash", line_color="red", opacity=0.3, row=row, col=col)
     
     def _plot_economic_impact(self, fig, normalized_scores, economic_data, colors, row, col):
-        """Plot economic indicators impact"""
+        """Enhanced economic indicators impact analysis"""
         if economic_data is not None and len(economic_data) > 0:
-            # Plot first few economic indicators
-            for i, col_name in enumerate(economic_data.columns[:3]):
+            # Get metadata if available
+            metadata = getattr(economic_data, 'metadata', {})
+            
+            # Plot economic indicators with enhanced information
+            legend_names_used = set()
+            for i, col_name in enumerate(economic_data.columns[:4]):  # Show up to 4 indicators
                 # Normalize economic data for comparison
                 econ_normalized = (economic_data[col_name] - economic_data[col_name].mean()) / economic_data[col_name].std()
+                
+                # Clean up column name for display
+                clean_name = col_name.split('_')[-1] if '_' in col_name else col_name
+                display_name = clean_name.replace('^', '').replace('=X', '').replace('-Y.NYB', ' Index')
+                
+                # Get category for additional context
+                category = next((cat for cat in metadata.keys() if cat in col_name), "Other")
+                if category != "Other":
+                    category_icon = category.split(' ')[0] if ' ' in category else "📊"
+                    display_name = f"{category_icon} {display_name}"
+                
+                # Ensure unique legend names
+                if display_name in legend_names_used:
+                    display_name = f"{display_name} ({i+1})"
+                legend_names_used.add(display_name)
                 
                 fig.add_trace(
                     go.Scatter(
                         x=economic_data.index,
                         y=econ_normalized,
                         mode='lines',
-                        name=col_name.replace('_', ' ').title(),
-                        line=dict(width=2, color=colors[i % len(colors)]),
-                        hovertemplate=f"{col_name}<br>Date: %{{x}}<br>Normalized: %{{y:.3f}}<extra></extra>"
+                        name=display_name,
+                        line=dict(width=2.5, color=colors[i % len(colors)]),
+                        hovertemplate=f"<b>{display_name}</b><br>Date: %{{x}}<br>Normalized Value: %{{y:.3f}}<br><extra></extra>",
+                        showlegend=True
                     ),
                     row=row, col=col
                 )
+            
+            # Add correlation information if we have factor scores
+            if len(normalized_scores.columns) > 0:
+                first_factor = normalized_scores.iloc[:, 0]
+                
+                # Calculate and display correlations
+                correlations = []
+                for col_name in economic_data.columns[:4]:
+                    common_dates = first_factor.index.intersection(economic_data.index)
+                    if len(common_dates) > 10:
+                        corr = first_factor.loc[common_dates].corr(economic_data[col_name].loc[common_dates])
+                        if not np.isnan(corr):
+                            clean_name = col_name.split('_')[-1] if '_' in col_name else col_name
+                            correlations.append(f"{clean_name}: {corr:.2f}")
+                
+                # Add correlation annotation with correct subplot reference
+                if correlations:
+                    corr_text = "PC1 Correlations:<br>" + "<br>".join(correlations[:3])
+                    # Calculate correct subplot index for annotations
+                    subplot_index = (row - 1) * 2 + col
+                    fig.add_annotation(
+                        x=0.02, y=0.98,
+                        xref=f"x{subplot_index} domain", yref=f"y{subplot_index} domain",
+                        text=corr_text,
+                        showarrow=False,
+                        font=dict(size=10, color="darkblue"),
+                        bgcolor="rgba(255,255,255,0.9)",
+                        bordercolor="lightblue",
+                        borderwidth=1,
+                        xanchor="left",
+                        yanchor="top"
+                    )
+            
+            # Add impact explanation if metadata available
+            if metadata:
+                impacts = []
+                # Extract meaningful impact descriptions
+                for category, info in list(metadata.items())[:2]:
+                    impact = info.get('impact', 'Economic indicator impact')
+                    # Truncate long impact descriptions
+                    if len(impact) > 60:
+                        impact = impact[:57] + "..."
+                    impacts.append(f"• {impact}")
+                
+                if impacts:
+                    impact_text = "Market Impact:<br>" + "<br>".join(impacts)
+                    subplot_index = (row - 1) * 2 + col
+                    fig.add_annotation(
+                        x=0.02, y=0.25,
+                        xref=f"x{subplot_index} domain", yref=f"y{subplot_index} domain",
+                        text=impact_text,
+                        showarrow=False,
+                        font=dict(size=9, color="darkgreen"),
+                        bgcolor="rgba(240,255,240,0.9)",
+                        bordercolor="lightgreen",
+                        borderwidth=1,
+                        xanchor="left",
+                        yanchor="bottom"
+                    )
+                    
         else:
-            # Add placeholder text
+            # Enhanced placeholder with helpful information
+            subplot_index = (row - 1) * 2 + col
             fig.add_annotation(
                 x=0.5, y=0.5,
-                xref=f"x{row*2+col-1} domain", yref=f"y{row*2+col-1} domain",
-                text="📊 No Economic Data Available",
+                xref=f"x{subplot_index} domain", yref=f"y{subplot_index} domain",
+                text="📊 Economic Indicators Analysis<br><br>" +
+                     "💡 Select economic indicators from the dropdown<br>" +
+                     "to see their impact on your portfolio factors.<br><br>" +
+                     "Available categories:<br>" +
+                     "• Treasury Yields • Commodities<br>" +
+                     "• Currency Markets • Volatility<br>" +
+                     "• Credit Markets • Real Estate",
                 showarrow=False,
-                font=dict(size=14, color="gray")
+                font=dict(size=11, color="gray"),
+                bgcolor="rgba(248,249,250,0.9)",
+                bordercolor="lightgray",
+                borderwidth=1
             )
     
     def _plot_extreme_events(self, fig, normalized_scores, regime_analysis, colors, row, col):
-        """Plot extreme events and recovery analysis"""
+        """Enhanced extreme events and recovery analysis with event specification"""
         if len(normalized_scores.columns) > 0:
             first_factor = normalized_scores.iloc[:, 0]
             
-            # Identify extreme events (|z-score| > 2)
+            # Identify extreme events (|z-score| > 2) with classification
             extreme_highs = first_factor[first_factor > 2]
             extreme_lows = first_factor[first_factor < -2]
+            severe_highs = first_factor[first_factor > 3]  # Very extreme events
+            severe_lows = first_factor[first_factor < -3]
             
             # Plot the factor
             fig.add_trace(
@@ -1005,23 +1123,23 @@ class EnhancedTimeSeriesAnalyzer:
                     x=first_factor.index,
                     y=first_factor.values,
                     mode='lines',
-                    name="PC1 Z-Score",
+                    name="PC1 Factor Movement",
                     line=dict(width=2, color=colors[0]),
                     hovertemplate="PC1<br>Date: %{x}<br>Z-Score: %{y:.3f}<extra></extra>"
                 ),
                 row=row, col=col
             )
             
-            # Highlight extreme events
+            # Highlight extreme events with better descriptions
             if len(extreme_highs) > 0:
                 fig.add_trace(
                     go.Scatter(
                         x=extreme_highs.index,
                         y=extreme_highs.values,
                         mode='markers',
-                        name="Extreme Highs",
+                        name="🔺 Market Stress Events",
                         marker=dict(color='red', size=8, symbol='triangle-up'),
-                        hovertemplate="Extreme High<br>Date: %{x}<br>Z-Score: %{y:.3f}<extra></extra>"
+                        hovertemplate="🔺 Market Stress Event<br>Date: %{x}<br>Z-Score: %{y:.3f}<br>Type: Portfolio divergence from norm<extra></extra>"
                     ),
                     row=row, col=col
                 )
@@ -1032,17 +1150,142 @@ class EnhancedTimeSeriesAnalyzer:
                         x=extreme_lows.index,
                         y=extreme_lows.values,
                         mode='markers',
-                        name="Extreme Lows",
+                        name="🔻 Market Correction Events", 
                         marker=dict(color='blue', size=8, symbol='triangle-down'),
-                        hovertemplate="Extreme Low<br>Date: %{x}<br>Z-Score: %{y:.3f}<extra></extra>"
+                        hovertemplate="🔻 Market Correction Event<br>Date: %{x}<br>Z-Score: %{y:.3f}<br>Type: Portfolio oversold condition<extra></extra>"
                     ),
                     row=row, col=col
                 )
+            
+            # Highlight severe events (z > 3 or z < -3)
+            if len(severe_highs) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=severe_highs.index,
+                        y=severe_highs.values,
+                        mode='markers',
+                        name="⚡ Crisis Events",
+                        marker=dict(color='darkred', size=12, symbol='star'),
+                        hovertemplate="⚡ CRISIS EVENT<br>Date: %{x}<br>Z-Score: %{y:.3f}<br>Type: Severe market dislocation<extra></extra>"
+                    ),
+                    row=row, col=col
+                )
+            
+            if len(severe_lows) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=severe_lows.index,
+                        y=severe_lows.values,
+                        mode='markers',
+                        name="💥 Crash Events",
+                        marker=dict(color='darkblue', size=12, symbol='star'),
+                        hovertemplate="💥 CRASH EVENT<br>Date: %{x}<br>Z-Score: %{y:.3f}<br>Type: Severe market crash<extra></extra>"
+                    ),
+                    row=row, col=col
+                )
+            
+            # Add event classification annotations
+            subplot_index = (row - 1) * 2 + col
+            event_summary = []
+            
+            if len(extreme_highs) > 0 or len(extreme_lows) > 0:
+                total_extreme = len(extreme_highs) + len(extreme_lows)
+                event_summary.append(f"📊 Total Events: {total_extreme}")
+                
+                if len(extreme_highs) > 0:
+                    event_summary.append(f"🔺 Stress Events: {len(extreme_highs)}")
+                if len(extreme_lows) > 0:
+                    event_summary.append(f"🔻 Correction Events: {len(extreme_lows)}")
+                if len(severe_highs) > 0:
+                    event_summary.append(f"⚡ Crisis Events: {len(severe_highs)}")
+                if len(severe_lows) > 0:
+                    event_summary.append(f"💥 Crash Events: {len(severe_lows)}")
+                    
+                # Calculate recovery metrics
+                if total_extreme > 0:
+                    # Simple recovery metric: average time to return to normal range (-1, 1)
+                    recovery_info = self._analyze_recovery_times(first_factor, extreme_highs, extreme_lows)
+                    if recovery_info:
+                        event_summary.append(f"🔄 Avg Recovery: {recovery_info}")
+                
+                event_text = "<br>".join(event_summary)
+                fig.add_annotation(
+                    x=0.02, y=0.98,
+                    xref=f"x{subplot_index} domain", yref=f"y{subplot_index} domain",
+                    text=event_text,
+                    showarrow=False,
+                    font=dict(size=10, color="darkred"),
+                    bgcolor="rgba(255,245,245,0.9)",
+                    bordercolor="red",
+                    borderwidth=1,
+                    xanchor="left",
+                    yanchor="top"
+                )
+                
+                # Add event explanation
+                explanation_text = ("Event Types:<br>"
+                                  "🔺 Z>2: Market stress/volatility<br>"
+                                  "🔻 Z<-2: Market corrections<br>"
+                                  "⚡💥 |Z|>3: Crisis/crash events")
+                fig.add_annotation(
+                    x=0.02, y=0.02,
+                    xref=f"x{subplot_index} domain", yref=f"y{subplot_index} domain",
+                    text=explanation_text,
+                    showarrow=False,
+                    font=dict(size=9, color="darkblue"),
+                    bgcolor="rgba(245,245,255,0.9)",
+                    bordercolor="blue",
+                    borderwidth=1,
+                    xanchor="left",
+                    yanchor="bottom"
+                )
+            else:
+                # No extreme events found
+                fig.add_annotation(
+                    x=0.5, y=0.5,
+                    xref=f"x{subplot_index} domain", yref=f"y{subplot_index} domain",
+                    text="📊 No Extreme Events Detected<br><br>✅ Portfolio showing stable behavior<br>All factor movements within ±2σ range",
+                    showarrow=False,
+                    font=dict(size=12, color="green"),
+                    bgcolor="rgba(245,255,245,0.9)",
+                    bordercolor="green",
+                    borderwidth=1
+                )
         
-        # Add extreme event threshold lines
+        # Add extreme event threshold lines with labels
+        fig.add_hline(y=3, line_dash="dot", line_color="darkred", opacity=0.7, row=row, col=col)
         fig.add_hline(y=2, line_dash="dash", line_color="red", opacity=0.5, row=row, col=col)
-        fig.add_hline(y=-2, line_dash="dash", line_color="blue", opacity=0.5, row=row, col=col)
         fig.add_hline(y=0, line_dash="solid", line_color="gray", opacity=0.3, row=row, col=col)
+        fig.add_hline(y=-2, line_dash="dash", line_color="blue", opacity=0.5, row=row, col=col)
+        fig.add_hline(y=-3, line_dash="dot", line_color="darkblue", opacity=0.7, row=row, col=col)
+    
+    def _analyze_recovery_times(self, factor_scores, extreme_highs, extreme_lows):
+        """Analyze average recovery time from extreme events"""
+        try:
+            recovery_days = []
+            
+            # Combine all extreme events
+            all_extremes = pd.concat([extreme_highs, extreme_lows]).sort_index()
+            
+            for event_date in all_extremes.index[:5]:  # Analyze first 5 events to avoid performance issues
+                # Find when factor returns to normal range (-1, 1)
+                future_scores = factor_scores.loc[factor_scores.index > event_date]
+                if len(future_scores) > 0:
+                    # Find first occurrence where |z-score| < 1
+                    recovery_point = future_scores[abs(future_scores) < 1]
+                    if len(recovery_point) > 0:
+                        recovery_date = recovery_point.index[0]
+                        days_to_recovery = (recovery_date - event_date).days
+                        recovery_days.append(days_to_recovery)
+            
+            if recovery_days:
+                avg_recovery = int(np.mean(recovery_days))
+                return f"{avg_recovery} days"
+            
+        except Exception:
+            pass
+        
+        return None
     
     def _plot_performance_attribution(self, fig, analysis_results, colors, row, col):
         """Plot factor performance attribution"""
@@ -1135,9 +1378,6 @@ def create_enhanced_timeseries_tab(results):
         returns = results['returns']
         economic_data = results.get('economic_data')
         
-        # Create loading screen first
-        loading_screen = create_loading_screen_with_progress()
-        
         # Initialize the enhanced analyzer
         analyzer = EnhancedTimeSeriesAnalyzer(
             window_short=30,
@@ -1145,31 +1385,27 @@ def create_enhanced_timeseries_tab(results):
             volatility_window=20
         )
         
-        # Perform comprehensive analysis with progress tracking
-        logger.info("🔄 Step 1/6: Analyzing factor scores and regimes...")
+        # Perform comprehensive analysis
+        logger.info("Running enhanced time series analysis...")
         ts_analysis = analyzer.analyze_factor_scores(factor_scores, explained_variance)
         
-        logger.info("🔄 Step 2/6: Computing stock-factor correlations...")
+        # Analyze stock correlations
         correlation_analysis = analyzer.analyze_stock_correlations(returns, factor_scores)
         ts_analysis.update(correlation_analysis)
         
         # Analyze economic relationships if data available
         if economic_data is not None and len(economic_data) > 0:
-            logger.info("🔄 Step 3/6: Analyzing economic relationships...")
             econ_analysis = analyzer.analyze_economic_relationships(factor_scores, economic_data)
             ts_analysis.update(econ_analysis)
-        else:
-            logger.info("🔄 Step 3/6: Skipping economic analysis (no data)...")
         
-        logger.info("🔄 Step 4/6: Creating enhanced visualizations...")
+        # Create enhanced visualizations
         main_fig = analyzer.create_enhanced_visualizations(
             ts_analysis, returns, economic_data
         )
         
-        logger.info("🔄 Step 5/6: Generating actionable insights...")
+        # Generate actionable insights
         insights = analyzer.generate_insights_report(ts_analysis)
         
-        logger.info("🔄 Step 6/6: Building user interface components...")
         # Create summary cards with enhanced metrics
         summary_cards = create_enhanced_summary_cards(ts_analysis)
         
@@ -1179,12 +1415,7 @@ def create_enhanced_timeseries_tab(results):
         # Create interpretation guide
         interpretation_guide = create_enhanced_interpretation_guide()
         
-        logger.info("✅ Enhanced time series analysis completed successfully!")
-        
         return html.Div([
-            # Completion notification
-            create_analysis_completion_message(),
-            
             # Enhanced summary metrics
             summary_cards,
             
@@ -1846,159 +2077,6 @@ def integrate_enhanced_timeseries_to_main():
     """
     
     return integration_notes
-
-
-def create_loading_screen_with_progress():
-    """Create a comprehensive loading screen with progress indicators"""
-    return html.Div([
-        dbc.Container([
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                # Main loading indicator
-                                html.Div([
-                                    dbc.Spinner(
-                                        html.Div(),
-                                        size="lg",
-                                        color="primary",
-                                        type="border",
-                                        delay_hide=1
-                                    ),
-                                ], className="text-center mb-4"),
-                                
-                                # Loading title
-                                html.H3([
-                                    html.I(className="fas fa-chart-line me-3"),
-                                    "Enhanced Time Series Analysis"
-                                ], className="text-center text-primary mb-4"),
-                                
-                                # Progress bar
-                                html.Div([
-                                    dbc.Progress(
-                                        value=0,
-                                        id="analysis-progress",
-                                        style={"height": "20px"},
-                                        className="mb-3"
-                                    ),
-                                    html.P("Initializing analysis...", 
-                                          id="progress-text",
-                                          className="text-center text-muted")
-                                ]),
-                                
-                                # Status cards
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Card([
-                                            dbc.CardBody([
-                                                html.H6("📊 Factor Analysis", className="card-title"),
-                                                html.P("Computing regime detection, momentum signals, and stability metrics", 
-                                                      className="card-text small text-muted"),
-                                                dbc.Badge("⏳ Pending", color="secondary", id="factor-status")
-                                            ])
-                                        ], className="h-100")
-                                    ], width=4),
-                                    
-                                    dbc.Col([
-                                        dbc.Card([
-                                            dbc.CardBody([
-                                                html.H6("🔗 Correlation Analysis", className="card-title"),
-                                                html.P("Analyzing rolling correlations and factor loadings drift", 
-                                                      className="card-text small text-muted"),
-                                                dbc.Badge("⏳ Pending", color="secondary", id="correlation-status")
-                                            ])
-                                        ], className="h-100")
-                                    ], width=4),
-                                    
-                                    dbc.Col([
-                                        dbc.Card([
-                                            dbc.CardBody([
-                                                html.H6("📈 Visualization", className="card-title"),
-                                                html.P("Creating 8-panel interactive dashboard with insights", 
-                                                      className="card-text small text-muted"),
-                                                dbc.Badge("⏳ Pending", color="secondary", id="viz-status")
-                                            ])
-                                        ], className="h-100")
-                                    ], width=4)
-                                ], className="mb-4"),
-                                
-                                # Performance note
-                                dbc.Alert([
-                                    html.H6("⚡ Performance Note", className="alert-heading"),
-                                    html.P([
-                                        "This analysis performs advanced computations including rolling PCA, ",
-                                        "regime detection, and multi-factor correlations. ",
-                                        "Processing time depends on dataset size and complexity."
-                                    ]),
-                                    html.P([
-                                        html.Strong("Estimated completion: "),
-                                        "30-120 seconds for typical datasets"
-                                    ], className="mb-0 small")
-                                ], color="info", className="mb-4"),
-                                
-                                # Technical details
-                                dbc.Collapse([
-                                    dbc.Card([
-                                        dbc.CardHeader("🔧 Technical Processing Details"),
-                                        dbc.CardBody([
-                                            html.Ul([
-                                                html.Li("Factor score normalization and regime classification"),
-                                                html.Li("Rolling statistical analysis (30/60-day windows)"),
-                                                html.Li("Stock-factor correlation evolution tracking"),
-                                                html.Li("Economic indicator relationship analysis"),
-                                                html.Li("Advanced visualization generation (8 panels)"),
-                                                html.Li("Actionable insights generation")
-                                            ], className="small")
-                                        ])
-                                    ])
-                                ], id="technical-details-collapse", is_open=False),
-                                
-                                html.Div([
-                                    dbc.Button(
-                                        "Show Technical Details",
-                                        id="show-technical-btn",
-                                        color="outline-secondary",
-                                        size="sm",
-                                        className="me-2"
-                                    ),
-                                    html.Small("⏱️ Started: " + datetime.datetime.now().strftime("%H:%M:%S"), 
-                                             className="text-muted")
-                                ], className="text-center")
-                            ])
-                        ])
-                    ])
-                ], width=8)
-            ], justify="center", className="min-vh-100 align-items-center")
-        ], fluid=True)
-    ], id="timeseries-loading-screen", style={
-        "position": "fixed",
-        "top": 0,
-        "left": 0,
-        "width": "100%",
-        "height": "100%",
-        "backgroundColor": "rgba(255, 255, 255, 0.95)",
-        "zIndex": 9999,
-        "display": "block"
-    })
-
-
-def create_analysis_completion_message():
-    """Create a completion message when analysis finishes"""
-    return dbc.Toast([
-        html.P([
-            html.I(className="fas fa-check-circle text-success me-2"),
-            html.Strong("Analysis Complete! "),
-            "Enhanced time series dashboard is ready."
-        ], className="mb-0")
-    ], 
-    header="✅ Time Series Analysis",
-    is_open=True,
-    dismissable=True,
-    duration=4000,
-    icon="success",
-    style={"position": "fixed", "top": 66, "right": 10, "width": 350}
-    )
 
 
 if __name__ == "__main__":
