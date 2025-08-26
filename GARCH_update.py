@@ -81,7 +81,7 @@ class VARAnalyzer:
             return returns_data.dropna()
         
         # Combine stock returns with economic indicators if available
-        if economic_data is not None and not economic_data.empty:
+        if economic_data is not None and len(economic_data) > 0:
             # Convert economic indicators to returns if needed
             econ_returns = economic_data.pct_change().dropna()
             
