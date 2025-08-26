@@ -98,13 +98,38 @@ STOCK_PRESETS = {
     "Custom": ""
 }
 
-# Economic indicators that can be fetched
+# Enhanced economic indicators for comprehensive market analysis
 ECONOMIC_INDICATORS = {
-    "Treasury Yields": ["^TNX", "^FVX", "^IRX"],  # 10Y, 5Y, 3M
-    "Currency": ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X"],  # Dollar Index, EUR/USD, GBP/USD
-    "Commodities": ["GC=F", "CL=F", "SI=F"],  # Gold, Oil, Silver
-    "Volatility": ["^VIX", "^VIX9D"],  # VIX indices
-    "Credit": ["HYG", "LQD", "TLT"]  # High Yield, Investment Grade, Long Treasury
+    "📈 Treasury Yields": {
+        "tickers": ["^TNX", "^FVX", "^IRX"], 
+        "description": "10Y, 5Y, 3M Treasury rates - fundamental interest rate indicators",
+        "impact": "Higher yields often correlate with defensive rotation and reduced risk appetite"
+    },
+    "💱 Currency Markets": {
+        "tickers": ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X"], 
+        "description": "Dollar Index, EUR/USD, GBP/USD - global currency strength indicators",
+        "impact": "Dollar strength affects multinational company earnings and emerging markets"
+    },
+    "🥇 Commodities": {
+        "tickers": ["GC=F", "CL=F", "SI=F"], 
+        "description": "Gold, Oil, Silver - inflation hedges and economic activity indicators",
+        "impact": "Commodity prices reflect inflation expectations and economic growth"
+    },
+    "😰 Market Volatility": {
+        "tickers": ["^VIX", "^VIX9D"], 
+        "description": "VIX indices - market fear and uncertainty gauges",
+        "impact": "High volatility indicates market stress and affects all asset classes"
+    },
+    "🏦 Credit Markets": {
+        "tickers": ["HYG", "LQD", "TLT"], 
+        "description": "High Yield, Investment Grade, Long Treasury - credit risk indicators",
+        "impact": "Credit spreads reveal risk appetite and economic outlook expectations"
+    },
+    "🏘️ Real Estate": {
+        "tickers": ["^RUT", "VNQ", "XLRE"], 
+        "description": "Russell 2000, REITs, Real Estate sector - domestic economic health",
+        "impact": "Real estate performance reflects interest rate sensitivity and economic growth"
+    }
 }
 
 class EnhancedVolatilityAnalyzer:
@@ -154,17 +179,25 @@ class EnhancedVolatilityAnalyzer:
         # Enhanced Sharpe ratio calculation
         annual_return = returns_clean.mean() * 252
         
-        # Dynamic risk-free rate calculation (more realistic)
-        # Use 10-year Treasury average or estimate from data characteristics
-        if abs(annual_return) < 0.5:  # If returns are very low, use lower risk-free rate
-            risk_free_rate = max(0.005, annual_return * 0.1)  # Minimum 0.5% or 10% of annual return
+        # Fix risk-free rate calculation for better Sharpe ratios
+        # Use appropriate risk-free rate based on data characteristics
+        if abs(annual_return) < 0.1:  # For factor scores or normalized data
+            # Use a much smaller risk-free rate to avoid overwhelming small returns
+            risk_free_rate = 0.001  # 0.1% - very conservative for factor analysis
+        elif abs(annual_return) < 0.5:  # Small but meaningful returns
+            risk_free_rate = 0.01   # 1% - reasonable for low returns
         else:
-            risk_free_rate = 0.02  # Standard 2% for normal returns
+            risk_free_rate = 0.02   # 2% - standard for normal stock returns
         
         # Improved Sharpe ratio with better handling
         if volatility > 1e-6 and not np.isnan(annual_return) and not np.isnan(volatility):
             excess_return = annual_return - risk_free_rate
             sharpe_ratio = excess_return / volatility
+            
+            # For very small returns, consider using the return/volatility ratio directly
+            # This gives a more meaningful measure for factor analysis
+            if abs(annual_return) < 0.05:  # Very small returns (typical for factor scores)
+                sharpe_ratio = annual_return / volatility  # Information ratio style
             
             # Ensure reasonable bounds for Sharpe ratio
             sharpe_ratio = np.clip(sharpe_ratio, -5, 5)
@@ -530,7 +563,7 @@ def create_enhanced_controls():
                     dcc.DatePickerRange(
                         id="date-picker",
                         start_date=datetime.datetime.now() - datetime.timedelta(days=365 * 2),
-                        end_date=datetime.datetime.now(),
+                        end_date=datetime.datetime.now() - datetime.timedelta(days=1),
                         display_format="YYYY-MM-DD",
                         className="mb-3"
                     )
@@ -539,12 +572,25 @@ def create_enhanced_controls():
                     html.Label("🌍 Economic Indicators (Optional):", className="form-label fw-bold"),
                     dcc.Dropdown(
                         id="economic-indicators",
-                        options=[{"label": k, "value": k} for k in ECONOMIC_INDICATORS.keys()],
+                        options=[
+                            {
+                                "label": html.Div([
+                                    html.Div(k, style={"fontWeight": "bold"}),
+                                    html.Div(v["description"], style={"fontSize": "0.8em", "color": "gray"})
+                                ]),
+                                "value": k
+                            } for k, v in ECONOMIC_INDICATORS.items()
+                        ],
                         value=[],
                         multi=True,
-                        placeholder="Select economic indicators to include",
-                        className="mb-3"
-                    )
+                        placeholder="Select economic indicators for enhanced analysis",
+                        className="mb-3",
+                        style={"minHeight": "40px"}
+                    ),
+                    html.Div([
+                        html.Small("💡 Economic indicators help identify macro factors affecting your portfolio", 
+                                 className="text-info")
+                    ], className="mb-2")
                 ], width=6)
             ]),
             
@@ -963,9 +1009,11 @@ def handle_enhanced_analysis(n_clicks, n_intervals, tickers, n_components, start
                         vargarch_results = None
 
                 # Store results globally for other callbacks
-                global pca_results, lstm_results_cache
-                # Reset LSTM cache for new analysis
+                global pca_results, lstm_results_cache, timeseries_results_cache, timeseries_cache_key
+                # Reset caches for new analysis
                 lstm_results_cache = None
+                timeseries_results_cache = None
+                timeseries_cache_key = None
                 
                 pca_results = {
                     'pca': pca,
@@ -1011,12 +1059,22 @@ def handle_enhanced_analysis(n_clicks, n_intervals, tickers, n_components, start
     return default_return
 
 def fetch_economic_data(indicator_categories, start_date, end_date):
-    """Fetch economic indicator data with improved error handling"""
+    """Fetch enhanced economic indicator data with comprehensive metadata"""
     economic_data = {}
+    economic_metadata = {}
     
     for category in indicator_categories:
         if category in ECONOMIC_INDICATORS:
-            tickers = ECONOMIC_INDICATORS[category]
+            indicator_info = ECONOMIC_INDICATORS[category]
+            tickers = indicator_info["tickers"]
+            
+            # Store metadata for this category
+            economic_metadata[category] = {
+                "description": indicator_info["description"],
+                "impact": indicator_info["impact"],
+                "tickers": tickers
+            }
+            
             try:
                 # Download with explicit parameters to avoid warnings
                 category_data = yf.download(
@@ -1053,7 +1111,11 @@ def fetch_economic_data(indicator_categories, start_date, end_date):
                 logger.warning(f"Failed to fetch {category}: {str(e)}")
                 continue
     
-    return pd.DataFrame(economic_data).dropna() if economic_data else None
+    # Return both data and metadata for enhanced analysis
+    result = pd.DataFrame(economic_data).dropna() if economic_data else None
+    if result is not None:
+        result.metadata = economic_metadata  # Attach metadata to the DataFrame
+    return result
 
 @app.callback(
     Output("tab-content", "children"),
@@ -1231,7 +1293,41 @@ def create_timeseries_immediate_loading():
 
 
 def create_enhanced_timeseries_with_loading(results):
-    """Enhanced time series analysis with user-friendly loading experience"""
+    """Enhanced time series analysis with user-friendly loading experience and caching"""
+    global timeseries_results_cache, timeseries_cache_key
+    
+    # Create a cache key based on PCA results to detect changes
+    try:
+        factor_scores = results.get('metrics', {}).get('factor_scores', pd.DataFrame())
+        if hasattr(factor_scores, 'values') and len(factor_scores) > 0:
+            # Use shape and a sample of values for cache key
+            cache_data = f"{factor_scores.shape}_{str(factor_scores.iloc[0:5, 0:3].values.flatten())}"
+        else:
+            cache_data = "empty_factor_scores"
+        current_cache_key = str(hash(cache_data))
+    except Exception as e:
+        logger.warning(f"Could not create cache key: {e}")
+        current_cache_key = str(hash(str(datetime.datetime.now())))
+    
+    # Check if we have cached results for the current PCA analysis
+    if (timeseries_results_cache is not None and 
+        timeseries_cache_key == current_cache_key):
+        logger.info("🚀 Loading cached time series analysis results")
+        
+        # Create completion banner for cached results
+        completion_banner = dbc.Alert([
+            html.P([
+                html.I(className="fas fa-check-circle text-success me-2"),
+                html.Strong("Cached Analysis Loaded! "),
+                "Previously computed time series analysis results"
+            ], className="mb-0")
+        ], color="success", dismissable=True, className="mb-3")
+        
+        return html.Div([
+            completion_banner,
+            timeseries_results_cache
+        ])
+    
     start_time = datetime.datetime.now()
     logger.info(f"🚀 Enhanced Time Series Analysis started at {start_time.strftime('%H:%M:%S')}")
     
@@ -1263,6 +1359,11 @@ def create_enhanced_timeseries_with_loading(results):
     try:
         # Run the actual enhanced analysis
         analysis_results = create_enhanced_timeseries_tab(results)
+        
+        # Cache the results
+        timeseries_results_cache = analysis_results
+        timeseries_cache_key = current_cache_key
+        logger.info("✅ Time series analysis results cached successfully")
         
         end_time = datetime.datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -2990,8 +3091,10 @@ def create_lstm_results(results):
             html.P("This may be due to insufficient data or model configuration issues.")
         ], color="danger", className="mt-4")
 
-# Global variable to track LSTM processing
+# Global variables to track processing
 lstm_results_cache = None
+timeseries_results_cache = None
+timeseries_cache_key = None
 
 @app.callback(
     [Output("lstm-loading-container", "style"),
