@@ -86,6 +86,7 @@ server = app.server
 # Enhanced stock presets with more options
 STOCK_PRESETS = {
     "Tech Giants": "AAPL,MSFT,GOOGL,AMZN,META",
+    "AI Stocks": "NVDA,AMD,GOOGL,MSFT,TSLA,PLTR,C3AI,AI,SNOW,CRM",
     "Banking": "JPM,BAC,WFC,C,GS",
     "Blue Chips": "AAPL,MSFT,JNJ,PG,KO",
     "Energy": "XOM,CVX,COP,SLB,EOG",
