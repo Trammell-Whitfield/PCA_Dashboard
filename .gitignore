@@ -1,3 +1,4 @@
 INV_PCA_DASH_env/
 __pycache__/
 demos/generate_example_graphs.py
+.DS_Store/
