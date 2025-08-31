@@ -1,3 +1,3 @@
 INV_PCA_DASH_env/
 __pycache__/
-demos/
+demos/generate_example_graphs.py
